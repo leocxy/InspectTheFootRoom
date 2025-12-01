@@ -65,7 +65,7 @@ namespace InspectTheFootRoom
                 self_items.Add(item.GetInstanceID());
             }
 
-            List<(string, int)> items = new List<(string, int)>();
+            List<ItemStatsSystem.Item> items = new List<ItemStatsSystem.Item>();
             bool found = false;
             foreach(var item in UnityEngine.Object.FindObjectsByType<ItemStatsSystem.Item>(FindObjectsSortMode.None)){
                 int item_type_id = item.TypeID;
@@ -83,8 +83,8 @@ namespace InspectTheFootRoom
 
                 if (targets.ContainsKey(item_type_id))
                 {
-                    items.Add((item.DisplayName, item_type_id));
-                    //Log($"{item.DisplayName} ({item_type_id}) {item.GetInstanceID()} {item.FromInfoKey}");
+                    items.Add((item));
+                    Log($"{item.DisplayName} ({item_type_id}) {item.GetInstanceID()} {item.FromInfoKey} - {item.ActiveAgent.transform.position}");
 
                     if (item_type_id == CROWN_ID && found is false)
                     {
@@ -110,7 +110,7 @@ namespace InspectTheFootRoom
             CharacterMainControl.Main.PopText("什么都木有!!!");
         }
 
-        private IEnumerator ShowItemsOnGround(List<(string, int)> items, bool found)
+        private IEnumerator ShowItemsOnGround(List<ItemStatsSystem.Item> items, bool found)
         {
             if (found)
             {
@@ -120,7 +120,7 @@ namespace InspectTheFootRoom
 
             foreach (var item in items)
             {
-                CharacterMainControl.Main.PopText($"地上有:{item.Item1}");
+                CharacterMainControl.Main.PopText($"{item.DisplayName} P:{item.ActiveAgent.transform.position}");
                 yield return new WaitForSeconds(3f); // 延迟 3 秒再显示下一个
             }
         }
