@@ -1,4 +1,7 @@
-﻿using Duckov.UI;
+﻿using Duckov.MiniMaps;
+using Duckov.MiniMaps.UI;
+using Duckov.Scenes;
+using Duckov.UI;
 using Duckov.Utilities;
 using ItemStatsSystem;
 using System;
@@ -11,6 +14,16 @@ using UnityEngine.UI;
 
 namespace InspectTheFootRoom
 {
+    public class MapCricleSpawn
+    {
+        public Item LikeItem { get; set; }
+        public Vector3 Position { get; set; }
+        public float Radius { get; set; } = 10f;
+        public int From { get; set; }
+        public int Index { get; set; }
+        public string BoxName { get; set; }
+    }
+
     public class ModBehaviour : Duckov.Modding.ModBehaviour
     {
         private static int CROWN_ID = 1254, X_KEY = 827, O_KEY = 828, YELLOW_CARD = 801, RED_CARD = 802, GREEN_CARD = 803, BLUE_CARD = 804, BLACK_CARD = 886, PURPLE_CARD = 887;
@@ -28,6 +41,11 @@ namespace InspectTheFootRoom
         };
         private static string MAP_NAME = "Level_Farm_01";
 
+        private bool CricleState = false;
+        private HashSet<GameObject> QuestCircleObjects = new HashSet<GameObject>();
+        //public InteractableLootbox[] AllLootboxesCache;
+        public InteractablePickup[] InteractableItems;
+
         void Log(string msg)
         {
             Debug.Log($"> Search Crown Mod: {msg}");
@@ -37,12 +55,16 @@ namespace InspectTheFootRoom
         {
             Log("Enable");
             LevelManager.OnLevelInitialized += SearchCrownAfterInitialized;
+            // 注册画圈事件
+            View.OnActiveViewChanged += ToggleQuestCircles;
         }
 
         void OnDisable()
         {
             Log("Disable");
             LevelManager.OnAfterLevelInitialized -= SearchCrownAfterInitialized;
+            // 注销画圈事件
+            View.OnActiveViewChanged -= ToggleQuestCircles;
         }
 
         private void SearchCrownAfterInitialized()
@@ -120,8 +142,117 @@ namespace InspectTheFootRoom
 
             foreach (var item in items)
             {
-                CharacterMainControl.Main.PopText($"{item.DisplayName} P:{item.ActiveAgent.transform.position}");
+                CharacterMainControl.Main.PopText($"地上有:{item.DisplayName} 坐标({item.ActiveAgent.transform.position})");
                 yield return new WaitForSeconds(3f); // 延迟 3 秒再显示下一个
+            }
+        }
+
+        private void ToggleQuestCircles()
+        {
+            MiniMapView mapView = MiniMapView.Instance;
+            if (mapView != null && View.ActiveView == mapView)
+            {
+                DrawQuestCircles();
+            }
+            else
+            {
+                // clear
+                if (CricleState)
+                {
+                    ClearQuestCircles();
+                    CricleState = false;
+                }
+            }
+        }
+
+        private void DrawQuestCircles()
+        {
+            if (CricleState)
+            {
+                return;
+            }
+
+            CricleState = true;
+            // Draw circles
+            ClearQuestCircles();
+
+            // Only draw the circles in the target map
+            if (SceneManager.GetActiveScene().name != MAP_NAME)
+            {
+                return;
+            }
+            InteractableItems = UnityEngine.Object.FindObjectsByType<InteractablePickup>(FindObjectsSortMode.None);
+            int DrawCount = 0;
+            foreach (var item in InteractableItems)
+            {
+                if(item?.ItemAgent?.Item != null)
+                {
+                    if (targets.ContainsKey(item.ItemAgent.Item.TypeID))
+                    {
+                        DrawCircleMark(item.ItemAgent.transform.position, 10f, item.ItemAgent.Item.DisplayName);
+                        DrawCount++;
+                    }
+                }
+            }
+        }
+
+        private void ClearQuestCircles()
+        {
+            foreach(GameObject cricle in QuestCircleObjects)
+            {
+                if (cricle != null)
+                {
+                    Destroy(cricle);
+                }
+            }
+
+            QuestCircleObjects.Clear();
+        }
+
+        private Sprite GetQuestIcon()
+        {
+            List<Sprite> AllIcons = MapMarkerManager.Icons;
+            if (AllIcons == null)
+            {
+                Debug.Log("无法获取图标。");
+                return null;
+            }
+            if (AllIcons?.Count == null || AllIcons?.Count <= 0)
+            {
+                Debug.Log("图标为空");
+            }
+            return AllIcons[0];
+        }
+
+        private void DrawCircleMark(Vector3 position, float radius, string itemName)
+        {
+            GameObject obj = new GameObject($"Item_${itemName}");
+            obj.transform.position = position;
+
+            Sprite iconToUse = GetQuestIcon();
+            
+            try
+            {
+                SimplePointOfInterest poi = obj.AddComponent<SimplePointOfInterest>();
+                poi.Setup(iconToUse, itemName, followActiveScene: true);
+
+                poi.Color = Color.green;
+                poi.IsArea = true;
+                poi.AreaRadius = radius;
+                poi.ShadowColor = Color.grey;
+                poi.ShadowDistance = 0f;
+
+                if (MultiSceneCore.MainScene.HasValue)
+                {
+                    SceneManager.MoveGameObjectToScene(obj, MultiSceneCore.MainScene.Value);
+                }
+
+                QuestCircleObjects.Add(obj);
+
+            } catch (Exception e)
+            {
+                Debug.LogError($"异常失败: {e.Message}");
+                Destroy(obj);
             }
         }
     }
