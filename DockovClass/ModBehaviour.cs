@@ -2,15 +2,13 @@
 using Duckov.MiniMaps.UI;
 using Duckov.Scenes;
 using Duckov.UI;
-using Duckov.Utilities;
 using ItemStatsSystem;
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using TMPro;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.SceneManagement;
-using UnityEngine.UI;
 
 namespace InspectTheFootRoom
 {
@@ -39,7 +37,95 @@ namespace InspectTheFootRoom
             { BLACK_CARD, "黑卡" },
             { PURPLE_CARD, "紫卡" },
         };
-        private static string MAP_NAME = "Level_Farm_01";
+
+        private static readonly HashSet<string> RAID_MAPS = new HashSet<string>
+        {
+            // 农场区域
+            "Level_Farm_01",
+            "Level_Farm_Main",
+            "Level_Farm_JLab_Facility", // 农场实验室
+    
+            // 地面零区
+            "Level_GroundZero_Main",
+            "Level_GroundZero_1",
+            "Level_GroundZero_Cave",
+    
+            // 隐藏仓库
+            "Level_HiddenWarehouse_Main",
+            "Level_HiddenWarehouse",
+            "Level_HiddenWarehouse_CellarUnderGround", // 地下酒窖
+    
+            // 实验室区域
+            "Level_JLab_Main",
+            "Level_JLab_1",
+            "Level_JLab_2",
+    
+            // 沙漠区域
+            "Level_Desert_Main",
+            "Level_Desert",
+            "Level_Desert_Boss", // 沙漠Boss房
+    
+            // 风暴区域（高价值，黑卡/紫卡常出）
+            "Level_StormZone_Main",
+            "Level_StormZone_1",
+            "Level_StormZone_B0",
+            "Level_StormZone_B1",
+            "Level_StormZone_B2",
+            "Level_StormZone_B3",
+            "Level_StormZone_B4",
+    
+            // 雪地军事基地（新版本高价值区域）
+            "Level_SnowMilitaryBase_Main",
+            "Level_SnowMilitaryBase",
+            "Level_SnowFactory",
+            "Level_SnowMilitaryBase_ColdStorage_Main", // 冷库（必出金）
+            "Level_SnowMilitaryBase_ColdStorage",
+    
+            // 僵尸模式（可选，如果你要支持）
+            "Level_Zombie_Main",
+            "Level_Zombie_1",
+    
+            // 风暴过去（新区域）
+            "Level_StormPast_Main",
+            "Level_StormPast_1",
+    
+            // 生存挑战（可选）
+            "Level_SurivalChallenge_Main",
+            "Level_SurivalChallenge",
+        };
+
+        // 判断当前是否为需要扫描的有效 Raid 战斗场景
+        private bool IsValidRaidScene()
+        {
+            string sceneName = SceneManager.GetActiveScene().name;
+
+            // 兜底：非战斗场景直接拒绝
+            if (sceneName.StartsWith("LoadingScreen") ||
+                sceneName.StartsWith("MainMenu") ||
+                sceneName.StartsWith("Startup") ||
+                sceneName.StartsWith("Base") ||
+                sceneName.StartsWith("PREPARE") ||
+                sceneName.Contains("CutScene") ||
+                sceneName.Contains("Guide") ||
+                sceneName.Contains("Demo") ||
+                sceneName.Contains("Dream") ||
+                sceneName.Contains("Wakeup") ||
+                sceneName.Contains("Getout"))
+            {
+                Log($"[Scene] 跳过非战斗场景: {sceneName}");
+                return false;
+            }
+
+            // 只扫描白名单里的战斗地图
+            if (!RAID_MAPS.Contains(sceneName))
+            {
+                Log($"[Scene] 跳过非目标战斗场景: {sceneName}");
+                return false;
+            }
+
+            Log($"[Scene] ✅ 进入目标战斗场景: {sceneName}");
+            return true;
+        }
 
         private bool CricleState = false;
         private HashSet<GameObject> QuestCircleObjects = new HashSet<GameObject>();
@@ -48,7 +134,7 @@ namespace InspectTheFootRoom
 
         void Log(string msg)
         {
-            Debug.Log($"> Search Crown Mod: {msg}");
+            Debug.Log($"[InspectTheFootRoom]: {msg}");
         }
 
         void OnEnable()
@@ -69,62 +155,101 @@ namespace InspectTheFootRoom
 
         private void SearchCrownAfterInitialized()
         {
-            string scene_name = SceneManager.GetActiveScene().name;
-            Log($"OnLevelInitialized: {scene_name}");
+            Log("SearchCrownAfterInitialized START");
 
-            if (scene_name != MAP_NAME)
+            // 1. 核心单例安全检查
+            if (LevelManager.Instance == null)
             {
+                Log("ERROR: LevelManager.Instance is NULL! Aborting search.");
                 return;
             }
 
+            if (!IsValidRaidScene())
+                return;
+
             HashSet<int> self_items = new HashSet<int>();
-            foreach (var item in LevelManager.Instance?.PetProxy?.Inventory)
+
+            // 2. 安全读取宠物背包 (PetProxy 可能为 null)
+            var petProxy = LevelManager.Instance.PetProxy;
+            if (petProxy?.Inventory != null)
             {
-                self_items.Add(item.GetInstanceID());
+                foreach (var item in petProxy.Inventory)
+                {
+                    if (item != null)
+                        self_items.Add(item.GetInstanceID());
+                }
+                Log($"Pet inventory items cached: {self_items.Count}");
             }
-            foreach (var item in LevelManager.Instance?.MainCharacter?.CharacterItem?.Inventory)
+            else
             {
-                self_items.Add(item.GetInstanceID());
+                Log("WARNING: PetProxy or PetProxy.Inventory is null. Skipping.");
+            }
+
+            // 3. 安全读取角色背包 (MainCharacter/CharacterItem 链路很长，极易为 null)
+            var mainChar = LevelManager.Instance.MainCharacter;
+            if (mainChar?.CharacterItem?.Inventory != null)
+            {
+                foreach (var item in mainChar.CharacterItem.Inventory)
+                {
+                    if (item != null)
+                        self_items.Add(item.GetInstanceID());
+                }
+                Log($"Total self items (including char): {self_items.Count}");
+            }
+            else
+            {
+                Log("WARNING: MainCharacter or CharacterItem.Inventory is null. Skipping.");
             }
 
             List<ItemStatsSystem.Item> items = new List<ItemStatsSystem.Item>();
             bool found = false;
-            foreach(var item in UnityEngine.Object.FindObjectsByType<ItemStatsSystem.Item>(FindObjectsSortMode.None)){
+
+            // 4. 安全遍历场景物品
+            var allItems = UnityEngine.Object.FindObjectsByType<ItemStatsSystem.Item>(FindObjectsSortMode.None);
+            Log($"Total Items found in scene: {allItems.Length}");
+
+            foreach (var item in allItems)
+            {
+                // 必须检查 item 是否为 null (Unity 对象可能被销毁)
+                if (item == null) continue;
+
+                // 1. 检查是否是自己身上的
+                // 2. 检查是否来自地上
+                // 3. 检查是否有效
+                if (self_items.Contains(item.GetInstanceID()) || item.FromInfoKey != "Ground" || item.ActiveAgent == null)
+                {
+                    continue;
+                }
+
+                // 检查 TypeID 是否有效
                 int item_type_id = item.TypeID;
-
-                if (self_items.Contains(item.GetInstanceID()))
-                {
-                    continue;
-                }
-
-                if (item.FromInfoKey != "Ground")
-                {
-                    //Log($"--忽略不是地上的物品: {item.DisplayName} ({item_type_id}) {item.GetInstanceID()} {item.FromInfoKey}");
-                    continue;
-                }
-
                 if (targets.ContainsKey(item_type_id))
                 {
-                    items.Add((item));
-                    Log($"{item.DisplayName} ({item_type_id}) {item.GetInstanceID()} {item.FromInfoKey} - {item.ActiveAgent.transform.position}");
+                    items.Add(item);
+                    Log($"Match: {item.DisplayName} ({item_type_id}) Pos: {item.ActiveAgent?.transform?.position}. ID: {item.GetInstanceID()}");
 
-                    if (item_type_id == CROWN_ID && found is false)
+                    if (item_type_id == CROWN_ID && !found)
                     {
                         found = true;
                     }
                 }
             }
 
-            if (items.Count == 0) {
-                StartCoroutine(ShowPoorMessages());
-                return;
-            }
+            Log($"Target items count: {items.Count}");
 
-            StartCoroutine(ShowItemsOnGround(items, found));  
+            if (items.Count == 0)
+            {
+                StartCoroutine(ShowPoorMessages());
+            }
+            else
+            {
+                StartCoroutine(ShowItemsOnGround(items, found));
+            }
         }
 
         private IEnumerator ShowPoorMessages()
         {
+            yield return new WaitForSeconds(1.5f);
             CharacterMainControl.Main.PopText("什么都木有!");
             yield return new WaitForSeconds(3f); 
             CharacterMainControl.Main.PopText("什么都木有!!");
@@ -134,15 +259,16 @@ namespace InspectTheFootRoom
 
         private IEnumerator ShowItemsOnGround(List<ItemStatsSystem.Item> items, bool found)
         {
+            yield return new WaitForSeconds(1.5f);
             if (found)
             {
                 CharacterMainControl.Main.PopText("找到你了!");
                 yield return new WaitForSeconds(2f); // 延迟 3 秒再显示下一个
-            }            
+            }
 
             foreach (var item in items)
             {
-                CharacterMainControl.Main.PopText($"地上有:{item.DisplayName} 坐标({item.ActiveAgent.transform.position})");
+                CharacterMainControl.Main.PopText($"地上有:{item.DisplayName} 坐标({item.ActiveAgent?.transform?.position})");
                 yield return new WaitForSeconds(3f); // 延迟 3 秒再显示下一个
             }
         }
@@ -168,24 +294,21 @@ namespace InspectTheFootRoom
         private void DrawQuestCircles()
         {
             if (CricleState)
-            {
                 return;
-            }
+
+            // Only draw the circles in the target map
+            if (!IsValidRaidScene())
+                return;
 
             CricleState = true;
             // Draw circles
             ClearQuestCircles();
 
-            // Only draw the circles in the target map
-            if (SceneManager.GetActiveScene().name != MAP_NAME)
-            {
-                return;
-            }
             InteractableItems = UnityEngine.Object.FindObjectsByType<InteractablePickup>(FindObjectsSortMode.None);
             int DrawCount = 0;
             foreach (var item in InteractableItems)
             {
-                if(item?.ItemAgent?.Item != null)
+                if(item?.ItemAgent?.Item != null && item.ItemAgent.transform != null)
                 {
                     if (targets.ContainsKey(item.ItemAgent.Item.TypeID))
                     {
@@ -198,15 +321,15 @@ namespace InspectTheFootRoom
 
         private void ClearQuestCircles()
         {
-            foreach(GameObject cricle in QuestCircleObjects)
+            foreach (var cricle in QuestCircleObjects)
             {
-                if (cricle != null)
+                if (cricle != null && cricle.scene.IsValid())
                 {
                     Destroy(cricle);
                 }
             }
-
             QuestCircleObjects.Clear();
+            CricleState = false;
         }
 
         private Sprite GetQuestIcon()
@@ -214,14 +337,14 @@ namespace InspectTheFootRoom
             List<Sprite> AllIcons = MapMarkerManager.Icons;
             if (AllIcons == null)
             {
-                Debug.Log("无法获取图标。");
+                Log("无法获取图标。");
                 return null;
             }
             if (AllIcons?.Count == null || AllIcons?.Count <= 0)
             {
-                Debug.Log("图标为空");
+                Log("图标为空");
             }
-            return AllIcons[0];
+            return AllIcons.First();
         }
 
         private void DrawCircleMark(Vector3 position, float radius, string itemName)
@@ -251,7 +374,7 @@ namespace InspectTheFootRoom
 
             } catch (Exception e)
             {
-                Debug.LogError($"异常失败: {e.Message}");
+                Log($"异常失败: {e.Message}");
                 Destroy(obj);
             }
         }
