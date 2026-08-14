@@ -162,7 +162,8 @@ namespace InspectTheFootRoom
         private string _searchText = "";
         private int _page = 0;            // 当前页码（0 起）
         private Vector2 _scrollPos = Vector2.zero;
-        private Rect _windowRect = new Rect(40, 40, 380, 520);
+        private Rect _windowRect = new Rect(40, 40, 560, 700);
+        private bool _uiScaled = false;   // 字体放大只做一次
         private const int WINDOW_ID = 73512;
         private const int MAX_DRAW = 250;
         private const int MAX_SELECTION = 20; // 最多可选物品数
@@ -219,17 +220,90 @@ namespace InspectTheFootRoom
             if (!_showUI)
                 return;
 
+            EnsureUiScale();
+
             _windowRect = GUILayout.Window(WINDOW_ID, _windowRect, DrawConfigWindow,
-                "选择要搜寻的物品  (F9 关闭)", GUILayout.Width(380), GUILayout.Height(520));
+                "选择要搜寻的物品  (F9 关闭)", GUILayout.Width(560), GUILayout.Height(700));
+        }
+
+        // 把整个配置窗口的字体放大到至少 2 倍，并换成支持中文的 CJK 字体（只执行一次）。
+        private void EnsureUiScale()
+        {
+            if (_uiScaled)
+                return;
+            _uiScaled = true;
+
+            var skin = GUI.skin;
+            if (skin == null)
+                return;
+
+            // 先换成支持中文的字体，否则中文会显示成方块（tofu）
+            var cjk = FindCjkFont();
+            if (cjk != null)
+                skin.font = cjk;
+
+            float scale = 2f;
+            System.Action<GUIStyle> bump = (st) =>
+            {
+                if (st == null) return;
+                int baseSize = st.fontSize > 0 ? st.fontSize : 12;
+                st.fontSize = Mathf.RoundToInt(baseSize * scale);
+            };
+
+            bump(skin.label);
+            bump(skin.button);
+            bump(skin.toggle);
+            bump(skin.textField);
+            bump(skin.box);
+            bump(skin.window);
+            bump(skin.horizontalSlider);
+            bump(skin.scrollView);
+        }
+
+        // 找一个能显示中文的字体：
+        //   1) 优先用游戏运行时已加载的、非 Arial 的字体（游戏本身能显示中文，说明存在 CJK 字体）
+        //   2) 退而求其次，用系统已安装的 CJK 字体（微软雅黑 / 黑体 等）
+        private Font FindCjkFont()
+        {
+            foreach (var f in Resources.FindObjectsOfTypeAll<Font>())
+            {
+                if (f == null) continue;
+                if (string.Equals(f.name, "Arial", System.StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (string.Equals(f.name, "LegacyRuntimeFont", System.StringComparison.OrdinalIgnoreCase))
+                    continue;
+                return f;
+            }
+
+            string[] osNames = new string[]
+            {
+                "Microsoft YaHei", "微软雅黑", "SimHei", "黑体",
+                "Noto Sans CJK SC", "Source Han Sans SC",
+                "Arial Unicode MS", "SimSun", "宋体",
+            };
+            foreach (var n in osNames)
+            {
+                try
+                {
+                    var f = Font.CreateDynamicFontFromOSFont(n, 24);
+                    if (f != null)
+                        return f;
+                }
+                catch
+                {
+                    // 该字体名在本机不存在，跳过
+                }
+            }
+            return null;
         }
 
         private void DrawConfigWindow(int id)
         {
             // 搜索框
             GUILayout.BeginHorizontal();
-            GUILayout.Label("搜索:", GUILayout.Width(40));
+            GUILayout.Label("搜索:", GUILayout.Width(70));
             GUI.SetNextControlName("ItemSearch");
-            string newSearch = GUILayout.TextField(_searchText, GUILayout.MinWidth(200));
+            string newSearch = GUILayout.TextField(_searchText, GUILayout.MinWidth(340));
             if (newSearch != _searchText)
             {
                 _searchText = newSearch;
