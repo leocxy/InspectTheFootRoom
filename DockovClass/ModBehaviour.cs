@@ -164,6 +164,7 @@ namespace InspectTheFootRoom
         private Vector2 _scrollPos = Vector2.zero;
         private Rect _windowRect = new Rect(40, 40, 560, 700);
         private bool _uiScaled = false;   // 字体放大只做一次
+        private GUIStyle _titleStyle;     // 自定义标题样式（窗口内绘制，避免原生标题栏高度溢出）
         private const int WINDOW_ID = 73512;
         private const int MAX_DRAW = 250;
         private const int MAX_SELECTION = 20; // 最多可选物品数
@@ -222,8 +223,39 @@ namespace InspectTheFootRoom
 
             EnsureUiScale();
 
-            _windowRect = GUILayout.Window(WINDOW_ID, _windowRect, DrawConfigWindow,
-                "选择要搜寻的物品  (F9 关闭)", GUILayout.Width(560), GUILayout.Height(700));
+            // 数据库未就绪（多为菜单阶段）：弹错误提示窗，引导用户进游戏后再呼出
+            if (_itemDb.Count == 0)
+                _windowRect = GUILayout.Window(WINDOW_ID, _windowRect, DrawErrorWindow,
+                    "", GUILayout.Width(560), GUILayout.Height(240));
+            else
+                _windowRect = GUILayout.Window(WINDOW_ID, _windowRect, DrawConfigWindow,
+                    "", GUILayout.Width(560), GUILayout.Height(700));
+        }
+
+        // 数据库未就绪时的提示窗：告诉用户先进入对局，再按 F9；并提供重试。
+        private void DrawErrorWindow(int id)
+        {
+            if (_titleStyle != null)
+                GUILayout.Label("物品数据库未就绪", _titleStyle);
+            GUILayout.Space(12);
+
+            GUILayout.Label("当前还没有加载游戏物品数据。");
+            GUILayout.Label("请先进入一场对局（Raid）后，再按 F9 打开本窗口。");
+            GUILayout.Space(10);
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("重试"))
+            {
+                _dbLoaded = false;   // 强制重跑一次加载
+                EnsureDatabase();
+            }
+            if (GUILayout.Button("关闭"))
+            {
+                _showUI = false;
+            }
+            GUILayout.EndHorizontal();
+
+            GUI.DragWindow(new Rect(0, 0, _windowRect.width, 44));
         }
 
         // 把整个配置窗口的字体放大到至少 2 倍，并换成支持中文的 CJK 字体（只执行一次）。
@@ -242,7 +274,7 @@ namespace InspectTheFootRoom
             if (cjk != null)
                 skin.font = cjk;
 
-            float scale = 2f;
+            float scale = 2.2f;
             System.Action<GUIStyle> bump = (st) =>
             {
                 if (st == null) return;
@@ -255,9 +287,30 @@ namespace InspectTheFootRoom
             bump(skin.toggle);
             bump(skin.textField);
             bump(skin.box);
-            bump(skin.window);
             bump(skin.horizontalSlider);
             bump(skin.scrollView);
+
+            // 窗口标题改为窗口内部自定义绘制，所以这里去掉原生标题栏高度，
+            // 避免固定标题栏装不下 2 倍字体而溢出/与下方内容重叠。
+            if (skin.window != null)
+            {
+                int baseSize = skin.window.fontSize > 0 ? skin.window.fontSize : 12;
+                skin.window.fontSize = Mathf.RoundToInt(baseSize * scale);
+
+                var b = skin.window.border;
+                skin.window.border = new RectOffset(b.left, b.right, 0, b.bottom);
+            }
+
+            // 自定义标题样式：基于 label，居中、2 倍字号、不换行
+            if (_titleStyle == null)
+            {
+                _titleStyle = new GUIStyle(skin.label);
+                int baseSize = skin.label != null && skin.label.fontSize > 0 ? skin.label.fontSize : 12;
+                _titleStyle.fontSize = Mathf.RoundToInt(baseSize * 1.5f);
+                _titleStyle.alignment = TextAnchor.MiddleCenter;
+                _titleStyle.wordWrap = true;
+                _titleStyle.normal.textColor = new Color(1f, 1f, 1f, 1f);
+            }
         }
 
         // 找一个能显示中文的字体：
@@ -299,6 +352,11 @@ namespace InspectTheFootRoom
 
         private void DrawConfigWindow(int id)
         {
+            // 自定义标题（不在原生标题栏里画，避免高度溢出/与下方重叠）
+            if (_titleStyle != null)
+                GUILayout.Label("选择要搜寻的物品  (F9 关闭)", _titleStyle);
+            GUILayout.Space(12); // 标题与下方内容之间的间距，可随意调整
+
             // 搜索框
             GUILayout.BeginHorizontal();
             GUILayout.Label("搜索:", GUILayout.Width(70));
@@ -397,8 +455,8 @@ namespace InspectTheFootRoom
             GUI.enabled = true;
             GUILayout.EndHorizontal();
 
-            // 允许拖拽窗口
-            GUI.DragWindow();
+            // 允许拖拽窗口：限制在顶部自定义标题区域（原生标题栏已去掉）
+            GUI.DragWindow(new Rect(0, 0, _windowRect.width, 44));
         }
 
         // 过滤 + 排序后的物品列表（不含分页）。已选中的排在前面，方便查看。
@@ -434,18 +492,18 @@ namespace InspectTheFootRoom
         // ===================================================================
         private void EnsureDatabase()
         {
+            // 仅“曾经成功加载过”才跳过；失败（菜单阶段）不锁定，容许下次重试
             if (_dbLoaded)
                 return;
-            _dbLoaded = true;
-            _itemDb = new List<ItemInfo>();
 
             try
             {
+                _itemDb = new List<ItemInfo>();
+
                 var collection = Resources.Load("ItemAssetsCollection");
                 if (collection == null)
                 {
-                    Log("无法加载 ItemAssetsCollection");
-                    CharacterMainControl.Main?.PopText("物品数据库加载失败");
+                    Log("无法加载 ItemAssetsCollection（可能尚未进入游戏）");
                     return;
                 }
 
@@ -485,6 +543,9 @@ namespace InspectTheFootRoom
                 }
 
                 Log($"物品数据库加载完成，共 {_itemDb.Count} 个");
+                // 只有真正取到数据才锁定，否则保留 false 以便后续重试
+                if (_itemDb.Count > 0)
+                    _dbLoaded = true;
             }
             catch (Exception e)
             {
