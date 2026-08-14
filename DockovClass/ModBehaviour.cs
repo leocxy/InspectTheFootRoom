@@ -7,6 +7,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -24,19 +25,34 @@ namespace InspectTheFootRoom
 
     public class ModBehaviour : Duckov.Modding.ModBehaviour
     {
-        private static int CROWN_ID = 1254, X_KEY = 827, O_KEY = 828, YELLOW_CARD = 801, RED_CARD = 802, GREEN_CARD = 803, BLUE_CARD = 804, BLACK_CARD = 886, PURPLE_CARD = 887;
-        private static readonly Dictionary<int, string> targets = new Dictionary<int, string>()
+        // ===== 物品 ID 常量（仅用于首次运行的默认勾选，等价于旧版硬编码表）=====
+        private static int
+            CROWN_ID = 1254,
+            X_KEY = 827,
+            O_KEY = 828,
+            YELLOW_CARD = 801,
+            RED_CARD = 802,
+            GREEN_CARD = 803,
+            BLUE_CARD = 804,
+            BLACK_CARD = 886,
+            PURPLE_CARD = 887,
+            TANK_BATTERY = 1430,
+            CANNONBALL = 1500;
+
+        private static readonly int[] DEFAULT_TARGET_IDS = new int[]
         {
-            { CROWN_ID, "皇冠" },
-            { X_KEY, "X钥匙" },
-            { O_KEY, "O钥匙" },
-            { YELLOW_CARD, "黄卡" },
-            { RED_CARD, "红卡" },
-            { GREEN_CARD, "绿卡" },
-            { BLUE_CARD, "蓝卡" },
-            { BLACK_CARD, "黑卡" },
-            { PURPLE_CARD, "紫卡" },
+            CROWN_ID, X_KEY, O_KEY,
+            YELLOW_CARD, RED_CARD, GREEN_CARD, BLUE_CARD, BLACK_CARD, PURPLE_CARD,
+            TANK_BATTERY, CANNONBALL,
         };
+
+        // ===== 玩家可配置的物品选择（替代硬编码 targets）=====
+        // 为空 = 扫描地面上全部物品；非空 = 只扫描选中的物品。
+        private HashSet<int> _selectedIds = new HashSet<int>(DEFAULT_TARGET_IDS);
+
+        // PlayerPrefs 持久化键
+        private const string PREF_IDS = "InspectTheFootRoom.SelectedItems";
+        private const string PREF_INIT = "InspectTheFootRoom.SelectionInitialized";
 
         private static readonly HashSet<string> RAID_MAPS = new HashSet<string>
         {
@@ -44,27 +60,27 @@ namespace InspectTheFootRoom
             "Level_Farm_01",
             "Level_Farm_Main",
             "Level_Farm_JLab_Facility", // 农场实验室
-    
+
             // 地面零区
             "Level_GroundZero_Main",
             "Level_GroundZero_1",
             "Level_GroundZero_Cave",
-    
+
             // 隐藏仓库
             "Level_HiddenWarehouse_Main",
             "Level_HiddenWarehouse",
             "Level_HiddenWarehouse_CellarUnderGround", // 地下酒窖
-    
+
             // 实验室区域
             "Level_JLab_Main",
             "Level_JLab_1",
             "Level_JLab_2",
-    
+
             // 沙漠区域
             "Level_Desert_Main",
             "Level_Desert",
             "Level_Desert_Boss", // 沙漠Boss房
-    
+
             // 风暴区域（高价值，黑卡/紫卡常出）
             "Level_StormZone_Main",
             "Level_StormZone_1",
@@ -73,22 +89,22 @@ namespace InspectTheFootRoom
             "Level_StormZone_B2",
             "Level_StormZone_B3",
             "Level_StormZone_B4",
-    
+
             // 雪地军事基地（新版本高价值区域）
             "Level_SnowMilitaryBase_Main",
             "Level_SnowMilitaryBase",
             "Level_SnowFactory",
             "Level_SnowMilitaryBase_ColdStorage_Main", // 冷库（必出金）
             "Level_SnowMilitaryBase_ColdStorage",
-    
+
             // 僵尸模式（可选，如果你要支持）
             "Level_Zombie_Main",
             "Level_Zombie_1",
-    
+
             // 风暴过去（新区域）
             "Level_StormPast_Main",
             "Level_StormPast_1",
-    
+
             // 生存挑战（可选）
             "Level_SurivalChallenge_Main",
             "Level_SurivalChallenge",
@@ -137,12 +153,37 @@ namespace InspectTheFootRoom
             Debug.Log($"[InspectTheFootRoom]: {msg}");
         }
 
+        // ===================================================================
+        //  配置 UI 相关状态
+        // ===================================================================
+        private bool _showUI = false;
+        private bool _dbLoaded = false;
+        private List<ItemInfo> _itemDb = new List<ItemInfo>();
+        private string _searchText = "";
+        private Vector2 _scrollPos = Vector2.zero;
+        private Rect _windowRect = new Rect(40, 40, 380, 520);
+        private const int WINDOW_ID = 73512;
+        private const int MAX_DRAW = 200;
+
+        private Dictionary<int, Sprite> _iconCache = new Dictionary<int, Sprite>();
+
+        // 物品信息（用于 UI 列表）
+        private class ItemInfo
+        {
+            public int Id;
+            public string Name;
+            public int Quality;
+        }
+
         void OnEnable()
         {
             Log("Enable");
             LevelManager.OnLevelInitialized += SearchCrownAfterInitialized;
             // 注册画圈事件
             View.OnActiveViewChanged += ToggleQuestCircles;
+
+            // 加载上次保存的选择（无存档则使用默认 10 件）
+            LoadSelection();
         }
 
         void OnDisable()
@@ -153,6 +194,233 @@ namespace InspectTheFootRoom
             View.OnActiveViewChanged -= ToggleQuestCircles;
         }
 
+        void Update()
+        {
+            // F9 切换配置窗口
+            if (Input.GetKeyDown(KeyCode.F9))
+            {
+                _showUI = !_showUI;
+                if (_showUI)
+                {
+                    EnsureDatabase();
+                    // 聚焦搜索框
+                    GUI.FocusControl("ItemSearch");
+                }
+            }
+        }
+
+        // ===================================================================
+        //  OnGUI：物品选择窗口（原生 IMGUI）
+        // ===================================================================
+        void OnGUI()
+        {
+            if (!_showUI)
+                return;
+
+            _windowRect = GUILayout.Window(WINDOW_ID, _windowRect, DrawConfigWindow,
+                "选择要搜寻的物品  (F9 关闭)", GUILayout.Width(380), GUILayout.Height(520));
+        }
+
+        private void DrawConfigWindow(int id)
+        {
+            // 搜索框
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("搜索:", GUILayout.Width(40));
+            GUI.SetNextControlName("ItemSearch");
+            _searchText = GUILayout.TextField(_searchText, GUILayout.MinWidth(200));
+            GUILayout.EndHorizontal();
+
+            // 统计
+            GUILayout.Label($"已选中: {_selectedIds.Count} 个 | 数据库总计: {_itemDb.Count}");
+
+            // 按钮行
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("全选匹配"))
+            {
+                foreach (var it in FilteredItems(false))
+                    _selectedIds.Add(it.Id);
+            }
+            if (GUILayout.Button("清空选择"))
+            {
+                _selectedIds.Clear();
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("保存配置"))
+            {
+                SaveSelection();
+                // 若小地图当前开着，立即按新选择重绘
+                if (MiniMapView.Instance != null && View.ActiveView == MiniMapView.Instance)
+                {
+                    ClearQuestCircles();
+                    DrawQuestCircles();
+                }
+                CharacterMainControl.Main?.PopText("已保存物品选择");
+            }
+            if (GUILayout.Button("关闭"))
+            {
+                _showUI = false;
+            }
+            GUILayout.EndHorizontal();
+
+            // 列表（滚动 + 勾选）
+            _scrollPos = GUILayout.BeginScrollView(_scrollPos, GUILayout.ExpandHeight(true));
+
+            int shown = 0;
+            foreach (var it in FilteredItems(true))
+            {
+                bool sel = _selectedIds.Contains(it.Id);
+                bool ns = GUILayout.Toggle(sel, $"  {it.Name}  (ID:{it.Id})");
+                if (ns != sel)
+                {
+                    if (ns) _selectedIds.Add(it.Id);
+                    else _selectedIds.Remove(it.Id);
+                }
+                shown++;
+            }
+
+            if (shown == 0)
+                GUILayout.Label("（无匹配物品）");
+            else if (shown >= MAX_DRAW)
+                GUILayout.Label($"（仅显示前 {MAX_DRAW} 条，请用搜索过滤）");
+
+            GUILayout.EndScrollView();
+
+            // 允许拖拽窗口
+            GUI.DragWindow();
+        }
+
+        // 过滤后的物品列表。limit200=true 时最多返回 MAX_DRAW 条（用于绘制）。
+        private IEnumerable<ItemInfo> FilteredItems(bool limit200)
+        {
+            string q = _searchText.Trim().ToLowerInvariant();
+            IEnumerable<ItemInfo> list = _itemDb;
+            if (!string.IsNullOrEmpty(q))
+            {
+                list = list.Where(x =>
+                    (x.Name != null && x.Name.ToLowerInvariant().Contains(q)) ||
+                    x.Id.ToString().Contains(q));
+            }
+            // 已选中的排在前面，方便查看
+            list = list.OrderBy(x => _selectedIds.Contains(x.Id) ? 0 : 1).ThenBy(x => x.Id);
+            if (limit200)
+                list = list.Take(MAX_DRAW);
+            return list;
+        }
+
+        // ===================================================================
+        //  物品数据库：运行时从 Resources 读取全量物品
+        // ===================================================================
+        private void EnsureDatabase()
+        {
+            if (_dbLoaded)
+                return;
+            _dbLoaded = true;
+            _itemDb = new List<ItemInfo>();
+
+            try
+            {
+                var collection = Resources.Load("ItemAssetsCollection");
+                if (collection == null)
+                {
+                    Log("无法加载 ItemAssetsCollection");
+                    CharacterMainControl.Main?.PopText("物品数据库加载失败");
+                    return;
+                }
+
+                var dicField = collection.GetType().GetField("dic",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                if (dicField == null)
+                {
+                    Log("找不到 dic 字段");
+                    return;
+                }
+
+                var dic = dicField.GetValue(collection) as System.Collections.IDictionary;
+                if (dic == null)
+                {
+                    Log("dic 为 null");
+                    return;
+                }
+
+                foreach (var key in dic.Keys)
+                {
+                    var entry = dic[key];
+                    if (entry == null) continue;
+
+                    var prefabField = entry.GetType().GetField("prefab",
+                        BindingFlags.Public | BindingFlags.Instance);
+                    if (prefabField == null) continue;
+
+                    var item = prefabField.GetValue(entry) as ItemStatsSystem.Item;
+                    if (item == null) continue;
+
+                    _itemDb.Add(new ItemInfo
+                    {
+                        Id = item.TypeID,
+                        Name = string.IsNullOrEmpty(item.DisplayName) ? ("#" + item.TypeID) : item.DisplayName,
+                        Quality = item.Quality,
+                    });
+                }
+
+                Log($"物品数据库加载完成，共 {_itemDb.Count} 个");
+            }
+            catch (Exception e)
+            {
+                Log($"物品数据库加载异常: {e.Message}");
+            }
+        }
+
+        // ===================================================================
+        //  选择的持久化（PlayerPrefs）
+        // ===================================================================
+        private void LoadSelection()
+        {
+            if (PlayerPrefs.HasKey(PREF_INIT))
+            {
+                string raw = PlayerPrefs.GetString(PREF_IDS, "");
+                _selectedIds = ParseIds(raw);
+                Log($"已从存档加载选择: {_selectedIds.Count} 个物品");
+            }
+            else
+            {
+                // 首次运行：默认勾选旧版 10 件高价值物品，保留原有行为
+                _selectedIds = new HashSet<int>(DEFAULT_TARGET_IDS);
+                Log("首次运行，使用默认物品选择");
+            }
+        }
+
+        private void SaveSelection()
+        {
+            PlayerPrefs.SetString(PREF_IDS, string.Join(",", _selectedIds));
+            PlayerPrefs.SetInt(PREF_INIT, 1);
+            PlayerPrefs.Save();
+            Log($"已保存选择: {_selectedIds.Count} 个物品");
+        }
+
+        private HashSet<int> ParseIds(string raw)
+        {
+            var set = new HashSet<int>();
+            if (string.IsNullOrWhiteSpace(raw))
+                return set;
+            foreach (var part in raw.Split(','))
+            {
+                if (int.TryParse(part.Trim(), out int id))
+                    set.Add(id);
+            }
+            return set;
+        }
+
+        // 是否追踪某物品：未选择任何 = 扫全部；否则只扫选中的
+        private bool ShouldTrack(int typeId)
+        {
+            return _selectedIds.Count == 0 || _selectedIds.Contains(typeId);
+        }
+
+        // ===================================================================
+        //  扫描逻辑
+        // ===================================================================
         private void SearchCrownAfterInitialized()
         {
             Log("SearchCrownAfterInitialized START");
@@ -221,9 +489,9 @@ namespace InspectTheFootRoom
                     continue;
                 }
 
-                // 检查 TypeID 是否有效
+                // 检查 TypeID 是否被用户选中（替代旧的硬编码 targets）
                 int item_type_id = item.TypeID;
-                if (targets.ContainsKey(item_type_id))
+                if (ShouldTrack(item_type_id))
                 {
                     items.Add(item);
                     Log($"Match: {item.DisplayName} ({item_type_id}) Pos: {item.ActiveAgent?.transform?.position}. ID: {item.GetInstanceID()}");
@@ -251,7 +519,7 @@ namespace InspectTheFootRoom
         {
             yield return new WaitForSeconds(1.5f);
             CharacterMainControl.Main.PopText("什么都木有!");
-            yield return new WaitForSeconds(3f); 
+            yield return new WaitForSeconds(3f);
             CharacterMainControl.Main.PopText("什么都木有!!");
             yield return new WaitForSeconds(2f);
             CharacterMainControl.Main.PopText("什么都木有!!!");
@@ -273,6 +541,9 @@ namespace InspectTheFootRoom
             }
         }
 
+        // ===================================================================
+        //  小地图画圈
+        // ===================================================================
         private void ToggleQuestCircles()
         {
             MiniMapView mapView = MiniMapView.Instance;
@@ -308,15 +579,17 @@ namespace InspectTheFootRoom
             int DrawCount = 0;
             foreach (var item in InteractableItems)
             {
-                if(item?.ItemAgent?.Item != null && item.ItemAgent.transform != null)
+                if (item?.ItemAgent?.Item != null && item.ItemAgent.transform != null)
                 {
-                    if (targets.ContainsKey(item.ItemAgent.Item.TypeID))
+                    var it = item.ItemAgent.Item;
+                    if (ShouldTrack(it.TypeID))
                     {
-                        DrawCircleMark(item.ItemAgent.transform.position, 10f, item.ItemAgent.Item.DisplayName);
+                        DrawCircleMark(it, item.ItemAgent.transform.position, 10f);
                         DrawCount++;
                     }
                 }
             }
+            Log($"小地图绘制标记: {DrawCount}");
         }
 
         private void ClearQuestCircles()
@@ -347,13 +620,131 @@ namespace InspectTheFootRoom
             return AllIcons.First();
         }
 
-        private void DrawCircleMark(Vector3 position, float radius, string itemName)
+        // -------------------------------------------------------------------
+        //  物品真实图标加载：反射获取 Item/ItemMetaData 上的图标，转换 Texture2D -> Sprite
+        //  找不到时回退到通用地图标记图标（MapMarkerManager.Icons.First()）
+        // -------------------------------------------------------------------
+        private static readonly string[] ICON_FIELD_NAMES = new string[]
         {
+            "Icon", "IconSprite", "Sprite", "ItemIcon", "Image", "Thumbnail", "IconTexture", "IconImage",
+        };
+        private static readonly string[] META_FIELD_NAMES = new string[]
+        {
+            "MetaData", "metaData", "ItemMetaData", "itemMetaData",
+        };
+
+        private Sprite GetItemIcon(ItemStatsSystem.Item item)
+        {
+            if (item == null)
+                return GetQuestIcon();
+
+            int id = item.TypeID;
+            if (_iconCache.TryGetValue(id, out var cached) && cached != null)
+                return cached;
+
+            Sprite spr = null;
+
+            // 1) 直接在 Item 上找 Sprite / Texture2D
+            spr = FindSprite(item) ?? FindTextureAsSprite(item);
+
+            // 2) 在 Item 的 metaData 上找
+            if (spr == null)
+            {
+                var meta = GetMetaData(item);
+                if (meta != null)
+                    spr = FindSprite(meta) ?? FindTextureAsSprite(meta);
+            }
+
+            if (spr == null)
+                spr = GetQuestIcon();
+
+            if (spr != null)
+                _iconCache[id] = spr;
+
+            return spr;
+        }
+
+        private object GetMetaData(ItemStatsSystem.Item item)
+        {
+            var t = item.GetType();
+            foreach (var name in META_FIELD_NAMES)
+            {
+                var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (p != null)
+                {
+                    try { return p.GetValue(item, null); } catch { }
+                }
+                var f = t.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (f != null)
+                {
+                    try { return f.GetValue(item); } catch { }
+                }
+            }
+            return null;
+        }
+
+        private Sprite FindSprite(object obj)
+        {
+            if (obj == null) return null;
+            var t = obj.GetType();
+            foreach (var name in ICON_FIELD_NAMES)
+            {
+                // 优先属性
+                var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (p != null && p.PropertyType == typeof(Sprite))
+                {
+                    try { return p.GetValue(obj, null) as Sprite; } catch { }
+                }
+                // 再字段
+                var f = t.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (f != null && f.FieldType == typeof(Sprite))
+                {
+                    try { return f.GetValue(obj) as Sprite; } catch { }
+                }
+            }
+            return null;
+        }
+
+        private Sprite FindTextureAsSprite(object obj)
+        {
+            if (obj == null) return null;
+            var t = obj.GetType();
+            foreach (var name in ICON_FIELD_NAMES)
+            {
+                var f = t.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (f != null && f.FieldType == typeof(Texture2D))
+                {
+                    try
+                    {
+                        var tex = f.GetValue(obj) as Texture2D;
+                        if (tex != null)
+                            return Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f));
+                    }
+                    catch { }
+                }
+                var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (p != null && p.PropertyType == typeof(Texture2D))
+                {
+                    try
+                    {
+                        var tex = p.GetValue(obj, null) as Texture2D;
+                        if (tex != null)
+                            return Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f));
+                    }
+                    catch { }
+                }
+            }
+            return null;
+        }
+
+        private void DrawCircleMark(ItemStatsSystem.Item item, Vector3 position, float radius)
+        {
+            string itemName = item?.DisplayName ?? "物品";
             GameObject obj = new GameObject($"Item_${itemName}");
             obj.transform.position = position;
 
-            Sprite iconToUse = GetQuestIcon();
-            
+            Sprite iconToUse = GetItemIcon(item);
+
             try
             {
                 SimplePointOfInterest poi = obj.AddComponent<SimplePointOfInterest>();
@@ -372,7 +763,8 @@ namespace InspectTheFootRoom
 
                 QuestCircleObjects.Add(obj);
 
-            } catch (Exception e)
+            }
+            catch (Exception e)
             {
                 Log($"异常失败: {e.Message}");
                 Destroy(obj);
