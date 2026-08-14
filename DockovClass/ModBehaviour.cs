@@ -671,42 +671,45 @@ namespace InspectTheFootRoom
             var allItems = UnityEngine.Object.FindObjectsByType<ItemStatsSystem.Item>(FindObjectsSortMode.None);
             Log($"Total Items found in scene: {allItems.Length}");
 
+            // ---- 地面物品（保持原逻辑）----
             foreach (var item in allItems)
             {
-                // 必须检查 item 是否为 null (Unity 对象可能被销毁)
                 if (item == null) continue;
-
-                // 1. 检查是否是自己身上的
-                // 2. 检查是否来自地上
-                // 3. 检查是否有效
                 if (self_items.Contains(item.GetInstanceID()) || item.FromInfoKey != "Ground" || item.ActiveAgent == null)
-                {
                     continue;
-                }
 
-                // 检查 TypeID 是否被用户选中（替代旧的硬编码 targets）
                 int item_type_id = item.TypeID;
                 if (ShouldTrack(item_type_id))
                 {
                     items.Add(item);
-                    Log($"Match: {item.DisplayName} ({item_type_id}) Pos: {item.ActiveAgent?.transform?.position}. ID: {item.GetInstanceID()}");
+                    Log($"Match: {item.DisplayName} ({item_type_id}) Pos: {GetItemPosition(item)}. ID: {item.GetInstanceID()}");
 
                     if (item_type_id == CROWN_ID && !found)
-                    {
                         found = true;
-                    }
                 }
             }
 
-            Log($"Target items count: {items.Count}");
+            // ---- 箱子/柜子里的物品 ----
+            // 真正的容器是 Level_Farm_Main 下 'Loot Box Inventories' 里的 Inventory_xxxx 物体，
+            // 每个带真实世界坐标，content 字段里就是箱子内的 Item。
+            List<ItemStatsSystem.Item> boxItems = new List<ItemStatsSystem.Item>();
+            HashSet<int> boxSeen = new HashSet<int>();
+            ForEachLootBoxInventory((chestPos, rep) =>
+            {
+                int id = rep.TypeID;
+                if (boxSeen.Add(id)) boxItems.Add(rep);
+                if (id == CROWN_ID && !found) found = true;
+            });
 
-            if (items.Count == 0)
+            Log($"Target items count: ground={items.Count} box={boxItems.Count}");
+
+            if (items.Count == 0 && boxItems.Count == 0)
             {
                 StartCoroutine(ShowPoorMessages());
             }
             else
             {
-                StartCoroutine(ShowItemsOnGround(items, found));
+                StartCoroutine(ShowItemsOnGround(items, boxItems, found));
             }
         }
 
@@ -720,7 +723,62 @@ namespace InspectTheFootRoom
             CharacterMainControl.Main.PopText("什么都木有!!!");
         }
 
-        private IEnumerator ShowItemsOnGround(List<ItemStatsSystem.Item> items, bool found)
+        private Vector3? GetItemPosition(ItemStatsSystem.Item item)
+        {
+            if (item == null) return null;
+            if (item.ActiveAgent != null && item.ActiveAgent.transform != null)
+                return item.ActiveAgent.transform.position;
+            if (item.transform != null) return item.transform.position;
+            return null;
+        }
+
+        // 读取 Inventory 的私有 content 字段（战利品列表）。用反射以兼容不同版本。
+        private static System.Reflection.FieldInfo _invContentField;
+        private static System.Collections.Generic.List<ItemStatsSystem.Item> GetInventoryContent(ItemStatsSystem.Inventory inv)
+        {
+            if (_invContentField == null)
+            {
+                _invContentField = typeof(ItemStatsSystem.Inventory).GetField("content",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            }
+            if (_invContentField == null) return null;
+            try { return _invContentField.GetValue(inv) as System.Collections.Generic.List<ItemStatsSystem.Item>; }
+            catch { return null; }
+        }
+
+        // 遍历所有"战利品箱"库存：对每个含追踪物品的箱子回调 (箱子世界坐标, 代表物品)
+        private void ForEachLootBoxInventory(System.Action<Vector3, ItemStatsSystem.Item> onChest)
+        {
+            var inventories = UnityEngine.Object.FindObjectsByType<ItemStatsSystem.Inventory>(FindObjectsSortMode.None);
+            foreach (var inv in inventories)
+            {
+                if (inv == null || inv.transform == null) continue;
+                Vector3 chestPos = inv.transform.position;
+                if (chestPos == Vector3.zero) continue;
+
+                var content = GetInventoryContent(inv);
+                if (content == null) continue;
+
+                // 判定为战利品箱：父级是 'Loot Box Inventories'，或库存里含有 UI_LootBox_* 物品
+                bool isLootBox = (inv.transform.parent != null && inv.transform.parent.name == "Loot Box Inventories");
+                if (!isLootBox)
+                {
+                    foreach (var c in content)
+                        if (c != null && (c.FromInfoKey ?? "").StartsWith("UI_LootBox_")) { isLootBox = true; break; }
+                }
+                if (!isLootBox) continue;
+
+                ItemStatsSystem.Item rep = null;
+                foreach (var it in content)
+                {
+                    if (it == null) continue;
+                    if (ShouldTrack(it.TypeID)) { rep = it; break; }
+                }
+                if (rep != null) onChest(chestPos, rep);
+            }
+        }
+
+        private IEnumerator ShowItemsOnGround(List<ItemStatsSystem.Item> groundItems, List<ItemStatsSystem.Item> boxItems, bool found)
         {
             yield return new WaitForSeconds(1.5f);
             if (found)
@@ -729,9 +787,17 @@ namespace InspectTheFootRoom
                 yield return new WaitForSeconds(2f); // 延迟 3 秒再显示下一个
             }
 
-            foreach (var item in items)
+            foreach (var item in groundItems)
             {
-                CharacterMainControl.Main.PopText($"地上有:{item.DisplayName} 坐标({item.ActiveAgent?.transform?.position})");
+                var p = GetItemPosition(item);
+                string posStr = p.HasValue ? p.Value.ToString() : "";
+                CharacterMainControl.Main.PopText($"地上有:{item.DisplayName} 坐标({posStr})");
+                yield return new WaitForSeconds(3f); // 延迟 3 秒再显示下一个
+            }
+
+            foreach (var item in boxItems)
+            {
+                CharacterMainControl.Main.PopText($"箱子里有:{item.DisplayName}");
                 yield return new WaitForSeconds(3f); // 延迟 3 秒再显示下一个
             }
         }
@@ -784,6 +850,14 @@ namespace InspectTheFootRoom
                     }
                 }
             }
+
+            // 箱子/柜子里的物品画圈（用容器的真实世界坐标）
+            ForEachLootBoxInventory((chestPos, rep) =>
+            {
+                DrawCircleMark(rep, chestPos, 10f);
+                DrawCount++;
+            });
+
             Log($"小地图绘制标记: {DrawCount}");
         }
 
