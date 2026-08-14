@@ -43,7 +43,7 @@ namespace InspectTheFootRoom
         {
             CROWN_ID, X_KEY, O_KEY,
             YELLOW_CARD, RED_CARD, GREEN_CARD, BLUE_CARD, BLACK_CARD, PURPLE_CARD,
-            TANK_BATTERY, CANNONBALL,
+            TANK_BATTERY,
         };
 
         // ===== 玩家可配置的物品选择（替代硬编码 targets）=====
@@ -163,7 +163,8 @@ namespace InspectTheFootRoom
         private Vector2 _scrollPos = Vector2.zero;
         private Rect _windowRect = new Rect(40, 40, 380, 520);
         private const int WINDOW_ID = 73512;
-        private const int MAX_DRAW = 200;
+        private const int MAX_DRAW = 250;
+        private const int MAX_SELECTION = 20; // 最多可选物品数
 
         private Dictionary<int, Sprite> _iconCache = new Dictionary<int, Sprite>();
 
@@ -231,14 +232,21 @@ namespace InspectTheFootRoom
             GUILayout.EndHorizontal();
 
             // 统计
-            GUILayout.Label($"已选中: {_selectedIds.Count} 个 | 数据库总计: {_itemDb.Count}");
+            GUILayout.Label($"已选中: {_selectedIds.Count}/{MAX_SELECTION} | 数据库总计: {_itemDb.Count}");
 
             // 按钮行
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("全选匹配"))
             {
                 foreach (var it in FilteredItems(false))
+                {
+                    if (_selectedIds.Count >= MAX_SELECTION)
+                    {
+                        CharacterMainControl.Main?.PopText($"已达到上限 {MAX_SELECTION} 种，部分未选入");
+                        break;
+                    }
                     _selectedIds.Add(it.Id);
+                }
             }
             if (GUILayout.Button("清空选择"))
             {
@@ -274,7 +282,7 @@ namespace InspectTheFootRoom
                 bool ns = GUILayout.Toggle(sel, $"  {it.Name}  (ID:{it.Id})");
                 if (ns != sel)
                 {
-                    if (ns) _selectedIds.Add(it.Id);
+                    if (ns) TrySelect(it.Id);
                     else _selectedIds.Remove(it.Id);
                 }
                 shown++;
@@ -416,6 +424,20 @@ namespace InspectTheFootRoom
         private bool ShouldTrack(int typeId)
         {
             return _selectedIds.Count == 0 || _selectedIds.Contains(typeId);
+        }
+
+        // 尝试选中某物品，超过上限则返回 false 并提示
+        private bool TrySelect(int id)
+        {
+            if (_selectedIds.Contains(id))
+                return true;
+            if (_selectedIds.Count >= MAX_SELECTION)
+            {
+                CharacterMainControl.Main?.PopText($"最多只能选 {MAX_SELECTION} 种物品");
+                return false;
+            }
+            _selectedIds.Add(id);
+            return true;
         }
 
         // ===================================================================
