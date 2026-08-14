@@ -43,7 +43,7 @@ namespace InspectTheFootRoom
         {
             CROWN_ID, X_KEY, O_KEY,
             YELLOW_CARD, RED_CARD, GREEN_CARD, BLUE_CARD, BLACK_CARD, PURPLE_CARD,
-            TANK_BATTERY,
+            TANK_BATTERY, CANNONBALL
         };
 
         // ===== 玩家可配置的物品选择（替代硬编码 targets）=====
@@ -160,6 +160,7 @@ namespace InspectTheFootRoom
         private bool _dbLoaded = false;
         private List<ItemInfo> _itemDb = new List<ItemInfo>();
         private string _searchText = "";
+        private int _page = 0;            // 当前页码（0 起）
         private Vector2 _scrollPos = Vector2.zero;
         private Rect _windowRect = new Rect(40, 40, 380, 520);
         private const int WINDOW_ID = 73512;
@@ -228,7 +229,12 @@ namespace InspectTheFootRoom
             GUILayout.BeginHorizontal();
             GUILayout.Label("搜索:", GUILayout.Width(40));
             GUI.SetNextControlName("ItemSearch");
-            _searchText = GUILayout.TextField(_searchText, GUILayout.MinWidth(200));
+            string newSearch = GUILayout.TextField(_searchText, GUILayout.MinWidth(200));
+            if (newSearch != _searchText)
+            {
+                _searchText = newSearch;
+                _page = 0; // 搜索变化时回到第一页
+            }
             GUILayout.EndHorizontal();
 
             // 统计
@@ -238,7 +244,7 @@ namespace InspectTheFootRoom
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("全选匹配"))
             {
-                foreach (var it in FilteredItems(false))
+                foreach (var it in FilteredItems())
                 {
                     if (_selectedIds.Count >= MAX_SELECTION)
                     {
@@ -275,8 +281,13 @@ namespace InspectTheFootRoom
             // 列表（滚动 + 勾选）
             _scrollPos = GUILayout.BeginScrollView(_scrollPos, GUILayout.ExpandHeight(true));
 
+            int total = FilteredTotal();
+            int pageCount = Mathf.Max(1, (total + MAX_DRAW - 1) / MAX_DRAW);
+            if (_page >= pageCount) _page = pageCount - 1;
+            if (_page < 0) _page = 0;
+
             int shown = 0;
-            foreach (var it in FilteredItems(true))
+            foreach (var it in FilteredPage(_page))
             {
                 bool sel = _selectedIds.Contains(it.Id);
                 bool ns = GUILayout.Toggle(sel, $"  {it.Name}  (ID:{it.Id})");
@@ -290,17 +301,34 @@ namespace InspectTheFootRoom
 
             if (shown == 0)
                 GUILayout.Label("（无匹配物品）");
-            else if (shown >= MAX_DRAW)
-                GUILayout.Label($"（仅显示前 {MAX_DRAW} 条，请用搜索过滤）");
 
             GUILayout.EndScrollView();
+
+            // 翻页导航
+            GUILayout.BeginHorizontal();
+            GUI.enabled = _page > 0;
+            if (GUILayout.Button("上一页"))
+            {
+                _page--;
+                _scrollPos = Vector2.zero;
+            }
+            GUI.enabled = true;
+            GUILayout.Label($"第 {_page + 1}/{pageCount} 页（共 {total} 个）", GUILayout.ExpandWidth(true));
+            GUI.enabled = _page < pageCount - 1;
+            if (GUILayout.Button("下一页"))
+            {
+                _page++;
+                _scrollPos = Vector2.zero;
+            }
+            GUI.enabled = true;
+            GUILayout.EndHorizontal();
 
             // 允许拖拽窗口
             GUI.DragWindow();
         }
 
-        // 过滤后的物品列表。limit200=true 时最多返回 MAX_DRAW 条（用于绘制）。
-        private IEnumerable<ItemInfo> FilteredItems(bool limit200)
+        // 过滤 + 排序后的物品列表（不含分页）。已选中的排在前面，方便查看。
+        private IEnumerable<ItemInfo> FilteredItems()
         {
             string q = _searchText.Trim().ToLowerInvariant();
             IEnumerable<ItemInfo> list = _itemDb;
@@ -312,9 +340,19 @@ namespace InspectTheFootRoom
             }
             // 已选中的排在前面，方便查看
             list = list.OrderBy(x => _selectedIds.Contains(x.Id) ? 0 : 1).ThenBy(x => x.Id);
-            if (limit200)
-                list = list.Take(MAX_DRAW);
             return list;
+        }
+
+        // 当前过滤条件下的物品总数（用于翻页计算）。
+        private int FilteredTotal()
+        {
+            return FilteredItems().Count();
+        }
+
+        // 取某一页（每页 MAX_DRAW 条）。
+        private IEnumerable<ItemInfo> FilteredPage(int page)
+        {
+            return FilteredItems().Skip(page * MAX_DRAW).Take(MAX_DRAW);
         }
 
         // ===================================================================
