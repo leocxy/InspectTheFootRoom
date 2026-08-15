@@ -717,9 +717,9 @@ namespace InspectTheFootRoom
         {
             yield return new WaitForSeconds(1.5f);
             CharacterMainControl.Main.PopText("什么都木有!");
-            yield return new WaitForSeconds(3f);
-            CharacterMainControl.Main.PopText("什么都木有!!");
             yield return new WaitForSeconds(2f);
+            CharacterMainControl.Main.PopText("什么都木有!!");
+            yield return new WaitForSeconds(2.5f);
             CharacterMainControl.Main.PopText("什么都木有!!!");
         }
 
@@ -749,10 +749,19 @@ namespace InspectTheFootRoom
         // 遍历所有"战利品箱"库存：对每个含追踪物品的箱子回调 (箱子世界坐标, 代表物品)
         private void ForEachLootBoxInventory(System.Action<Vector3, ItemStatsSystem.Item> onChest)
         {
+            // 排除角色/宠物自身背包（同样是 Inventory，会被 FindObjectsByType 搜到且坐标在角色身上）
+            var selfInvs = new HashSet<ItemStatsSystem.Inventory>();
+            var lm = LevelManager.Instance;
+            if (lm?.MainCharacter?.CharacterItem?.Inventory != null)
+                selfInvs.Add(lm.MainCharacter.CharacterItem.Inventory);
+            if (lm?.PetProxy?.Inventory != null)
+                selfInvs.Add(lm.PetProxy.Inventory);
+
             var inventories = UnityEngine.Object.FindObjectsByType<ItemStatsSystem.Inventory>(FindObjectsSortMode.None);
             foreach (var inv in inventories)
             {
                 if (inv == null || inv.transform == null) continue;
+                if (selfInvs.Contains(inv)) continue;   // ← 跳过角色/宠物自身背包
                 Vector3 chestPos = inv.transform.position;
                 if (chestPos == Vector3.zero) continue;
 
@@ -833,8 +842,28 @@ namespace InspectTheFootRoom
                 return;
 
             CricleState = true;
-            // Draw circles
             ClearQuestCircles();
+
+            // 收集背包/手持物品的实例 ID，用于排除已拾取的物品
+            HashSet<int> self_items = new HashSet<int>();
+
+            var lm = LevelManager.Instance;
+            var petProxy = lm?.PetProxy;
+            var mainChar = lm?.MainCharacter;
+
+            if (petProxy?.Inventory != null)
+                foreach (var invItem in petProxy.Inventory)
+                    if (invItem != null) self_items.Add(invItem.GetInstanceID());
+
+            if (mainChar?.CharacterItem?.Inventory != null)
+                foreach (var invItem in mainChar.CharacterItem.Inventory)
+                    if (invItem != null) self_items.Add(invItem.GetInstanceID());
+
+            // 当前手持物品不在 CharacterItem.Inventory 中，需单独收集
+            if (mainChar?.CurrentHoldItemAgent?.Item != null)
+                self_items.Add(mainChar.CurrentHoldItemAgent.Item.GetInstanceID());
+
+            var playerTransform = mainChar?.transform;
 
             InteractableItems = UnityEngine.Object.FindObjectsByType<InteractablePickup>(FindObjectsSortMode.None);
             int DrawCount = 0;
@@ -843,6 +872,9 @@ namespace InspectTheFootRoom
                 if (item?.ItemAgent?.Item != null && item.ItemAgent.transform != null)
                 {
                     var it = item.ItemAgent.Item;
+                    if (item.ItemAgent.Holder != null) continue;                       // 已被持有
+                    if (playerTransform != null && item.ItemAgent.transform.IsChildOf(playerTransform)) continue; // 挂在玩家身上（跟着走）
+                    if (self_items.Contains(it.GetInstanceID())) continue;            // 已进入背包
                     if (ShouldTrack(it.TypeID))
                     {
                         DrawCircleMark(it, item.ItemAgent.transform.position, 10f);
